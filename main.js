@@ -17,6 +17,11 @@ process.on("uncaughtException", e => {
     process.exit(1);
 });
 
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+    signale.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 signale.start(`Starting eDEX-UI v${app.getVersion()}`);
 signale.info(`With Node ${process.versions.node} and Electron ${process.versions.electron}`);
 signale.info(`Renderer is Chrome ${process.versions.chrome}`);
@@ -79,7 +84,7 @@ if (!fs.existsSync(settingsFile)) {
         shellArgs: '',
         cwd: electron.app.getPath("userData"),
         keyboard: "en-US",
-        theme: "blade",  // Changed to blade theme since you're copying it
+        theme: "blade",
         termFontSize: 15,
         audio: true,
         audioVolume: 1.0,
@@ -87,10 +92,10 @@ if (!fs.existsSync(settingsFile)) {
         clockHours: 24,
         pingAddr: "1.1.1.1",
         port: 3000,
-        nointro: false,  // Set to true if you want to skip boot animation
+        nointro: false,
         nocursor: false,
-        forceFullscreen: false,  // Changed to false for easier debugging
-        allowWindowed: true,     // Changed to true for easier debugging
+        forceFullscreen: false,
+        allowWindowed: true,
         excludeThreadsFromToplist: true,
         hideDotfiles: false,
         fsListView: false,
@@ -114,7 +119,7 @@ if (!fs.existsSync(shortcutsFile)) {
         { type: "app", trigger: "Ctrl+Shift+L", action: "FS_LIST_VIEW", enabled: true },
         { type: "app", trigger: "Ctrl+Shift+H", action: "FS_DOTFILES", enabled: true },
         { type: "app", trigger: "Ctrl+Shift+P", action: "KB_PASSMODE", enabled: true },
-        { type: "app", trigger: "Ctrl+Shift+I", action: "DEV_DEBUG", enabled: true },  // Enabled for debugging
+        { type: "app", trigger: "Ctrl+Shift+I", action: "DEV_DEBUG", enabled: true },
         { type: "app", trigger: "Ctrl+Shift+F5", action: "DEV_RELOAD", enabled: true },
         { type: "shell", trigger: "Ctrl+Shift+Alt+Space", action: "neofetch", linebreak: true, enabled: false }
     ], "", 4));
@@ -124,7 +129,7 @@ if (!fs.existsSync(shortcutsFile)) {
 // Create default window state file
 if(!fs.existsSync(lastWindowStateFile)) {
     fs.writeFileSync(lastWindowStateFile, JSON.stringify({
-        useFullscreen: false  // Changed to false for easier debugging
+        useFullscreen: false
     }, "", 4));
     signale.info(`Default last window state written to ${lastWindowStateFile}`);
 }
@@ -247,130 +252,156 @@ function createWindow(settings) {
     signale.watch("Waiting for frontend connection...");
 }
 
-app.on('ready', async () => {
-    signale.pending(`Loading settings file...`);
-    let settings = require(settingsFile);
-    signale.pending(`Resolving shell path...`);
-    settings.shell = await which(settings.shell).catch(e => { throw(e) });
-    signale.info(`Shell found at ${settings.shell}`);
-    signale.success(`Settings loaded!`);
-
-    if (!require("fs").existsSync(settings.cwd)) throw new Error("Configured cwd path does not exist.");
-
-    // See #366
-    let cleanEnv = await require("shell-env").shellEnv(settings.shell).catch(e => { throw e; });
-
-    Object.assign(cleanEnv, {
-        TERM: "xterm-256color",
-        COLORTERM: "truecolor",
-        TERM_PROGRAM: "eDEX-UI",
-        TERM_PROGRAM_VERSION: app.getVersion()
-    }, settings.env);
-
-    signale.pending(`Creating new terminal process on port ${settings.port || '3000'}`);
-    tty = new Terminal({
-        role: "server",
-        shell: settings.shell,
-        params: settings.shellArgs || '',
-        cwd: settings.cwd,
-        env: cleanEnv,
-        port: settings.port || 3000
-    });
-    signale.success(`Terminal back-end initialized!`);
-    tty.onclosed = (code, signal) => {
-        tty.ondisconnected = () => {};
-        signale.complete("Terminal exited", code, signal);
-        app.quit();
-    };
-    tty.onopened = () => {
-        signale.success("Connected to frontend!");
-        signale.timeEnd("Startup");
-    };
-    tty.onresized = (cols, rows) => {
-        signale.info("Resized TTY to ", cols, rows);
-    };
-    tty.ondisconnected = () => {
-        signale.error("Lost connection to frontend");
-        signale.watch("Waiting for frontend connection...");
-    };
-
-    // Support for multithreaded systeminformation calls
-    signale.pending("Starting multithreaded calls controller...");
-    require("./_multithread.js");
-
-    createWindow(settings);
-
-    // Support for more terminals, used for creating tabs (currently limited to 4 extra terms)
-    extraTtys = {};
-    let basePort = settings.port || 3000;
-    basePort = Number(basePort) + 2;
-
-    for (let i = 0; i < 4; i++) {
-        extraTtys[basePort+i] = null;
+// Helper function to get shell environment safely
+async function getShellEnvironment(shellPath) {
+    try {
+        // Try dynamic import for ES modules
+        const shellEnv = await import('shell-env');
+        return await shellEnv.shellEnv(shellPath);
+    } catch (importError) {
+        signale.warn("Could not load shell-env module:", importError.message);
+        
+        // Fallback to basic environment
+        return {
+            ...process.env,
+            TERM: "xterm-256color",
+            COLORTERM: "truecolor",
+            TERM_PROGRAM: "eDEX-UI",
+            TERM_PROGRAM_VERSION: app.getVersion()
+        };
     }
+}
 
-    ipc.on("ttyspawn", (e, arg) => {
-        let port = null;
-        Object.keys(extraTtys).forEach(key => {
-            if (extraTtys[key] === null && port === null) {
-                extraTtys[key] = {};
-                port = key;
+app.on('ready', async () => {
+    try {
+        signale.pending(`Loading settings file...`);
+        let settings = require(settingsFile);
+        signale.pending(`Resolving shell path...`);
+        settings.shell = await which(settings.shell).catch(e => { throw(e) });
+        signale.info(`Shell found at ${settings.shell}`);
+        signale.success(`Settings loaded!`);
+
+        if (!require("fs").existsSync(settings.cwd)) throw new Error("Configured cwd path does not exist.");
+
+        // Get shell environment with fallback
+        let cleanEnv = await getShellEnvironment(settings.shell);
+
+        Object.assign(cleanEnv, {
+            TERM: "xterm-256color",
+            COLORTERM: "truecolor",
+            TERM_PROGRAM: "eDEX-UI",
+            TERM_PROGRAM_VERSION: app.getVersion()
+        }, settings.env);
+
+        signale.pending(`Creating new terminal process on port ${settings.port || '3000'}`);
+        tty = new Terminal({
+            role: "server",
+            shell: settings.shell,
+            params: settings.shellArgs || '',
+            cwd: settings.cwd,
+            env: cleanEnv,
+            port: settings.port || 3000
+        });
+        signale.success(`Terminal back-end initialized!`);
+        tty.onclosed = (code, signal) => {
+            tty.ondisconnected = () => {};
+            signale.complete("Terminal exited", code, signal);
+            app.quit();
+        };
+        tty.onopened = () => {
+            signale.success("Connected to frontend!");
+            signale.timeEnd("Startup");
+        };
+        tty.onresized = (cols, rows) => {
+            signale.info("Resized TTY to ", cols, rows);
+        };
+        tty.ondisconnected = () => {
+            signale.error("Lost connection to frontend");
+            signale.watch("Waiting for frontend connection...");
+        };
+
+        // Support for multithreaded systeminformation calls
+        signale.pending("Starting multithreaded calls controller...");
+        require("./_multithread.js");
+
+        createWindow(settings);
+
+        // Support for more terminals, used for creating tabs (currently limited to 4 extra terms)
+        extraTtys = {};
+        let basePort = settings.port || 3000;
+        basePort = Number(basePort) + 2;
+
+        for (let i = 0; i < 4; i++) {
+            extraTtys[basePort+i] = null;
+        }
+
+        ipc.on("ttyspawn", (e, arg) => {
+            let port = null;
+            Object.keys(extraTtys).forEach(key => {
+                if (extraTtys[key] === null && port === null) {
+                    extraTtys[key] = {};
+                    port = key;
+                }
+            });
+
+            if (port === null) {
+                signale.error("TTY spawn denied (Reason: exceeded max TTYs number)");
+                e.sender.send("ttyspawn-reply", "ERROR: max number of ttys reached");
+            } else {
+                signale.pending(`Creating new TTY process on port ${port}`);
+                let term = new Terminal({
+                    role: "server",
+                    shell: settings.shell,
+                    params: settings.shellArgs || '',
+                    cwd: tty.tty._cwd || settings.cwd,
+                    env: cleanEnv,
+                    port: port
+                });
+                signale.success(`New terminal back-end initialized at ${port}`);
+                term.onclosed = (code, signal) => {
+                    term.ondisconnected = () => {};
+                    term.wss.close();
+                    signale.complete(`TTY exited at ${port}`, code, signal);
+                    extraTtys[term.port] = null;
+                    term = null;
+                };
+                term.onopened = pid => {
+                    signale.success(`TTY ${port} connected to frontend (process PID ${pid})`);
+                };
+                term.onresized = () => {};
+                term.ondisconnected = () => {
+                    term.onclosed = () => {};
+                    term.close();
+                    term.wss.close();
+                    extraTtys[term.port] = null;
+                    term = null;
+                };
+
+                extraTtys[port] = term;
+                e.sender.send("ttyspawn-reply", "SUCCESS: "+port);
             }
         });
 
-        if (port === null) {
-            signale.error("TTY spawn denied (Reason: exceeded max TTYs number)");
-            e.sender.send("ttyspawn-reply", "ERROR: max number of ttys reached");
-        } else {
-            signale.pending(`Creating new TTY process on port ${port}`);
-            let term = new Terminal({
-                role: "server",
-                shell: settings.shell,
-                params: settings.shellArgs || '',
-                cwd: tty.tty._cwd || settings.cwd,
-                env: cleanEnv,
-                port: port
-            });
-            signale.success(`New terminal back-end initialized at ${port}`);
-            term.onclosed = (code, signal) => {
-                term.ondisconnected = () => {};
-                term.wss.close();
-                signale.complete(`TTY exited at ${port}`, code, signal);
-                extraTtys[term.port] = null;
-                term = null;
-            };
-            term.onopened = pid => {
-                signale.success(`TTY ${port} connected to frontend (process PID ${pid})`);
-            };
-            term.onresized = () => {};
-            term.ondisconnected = () => {
-                term.onclosed = () => {};
-                term.close();
-                term.wss.close();
-                extraTtys[term.port] = null;
-                term = null;
-            };
-
-            extraTtys[port] = term;
-            e.sender.send("ttyspawn-reply", "SUCCESS: "+port);
-        }
-    });
-
-    // Backend support for theme and keyboard hotswitch
-    let themeOverride = null;
-    let kbOverride = null;
-    ipc.on("getThemeOverride", (e, arg) => {
-        e.sender.send("getThemeOverride", themeOverride);
-    });
-    ipc.on("getKbOverride", (e, arg) => {
-        e.sender.send("getKbOverride", kbOverride);
-    });
-    ipc.on("setThemeOverride", (e, arg) => {
-        themeOverride = arg;
-    });
-    ipc.on("setKbOverride", (e, arg) => {
-        kbOverride = arg;
-    });
+        // Backend support for theme and keyboard hotswitch
+        let themeOverride = null;
+        let kbOverride = null;
+        ipc.on("getThemeOverride", (e, arg) => {
+            e.sender.send("getThemeOverride", themeOverride);
+        });
+        ipc.on("getKbOverride", (e, arg) => {
+            e.sender.send("getKbOverride", kbOverride);
+        });
+        ipc.on("setThemeOverride", (e, arg) => {
+            themeOverride = arg;
+        });
+        ipc.on("setKbOverride", (e, arg) => {
+            kbOverride = arg;
+        });
+    } catch (error) {
+        signale.fatal("Error during app initialization:", error);
+        dialog.showErrorBox("Initialization Error", error.message);
+        app.quit();
+    }
 });
 
 app.on('web-contents-created', (e, contents) => {

@@ -53,18 +53,22 @@ window.settings = require(settingsFile);
 window.shortcuts = require(shortcutsFile);
 window.lastWindowState = require(lastWindowStateFile);
 
-// Load CLI parameters
-// Load CLI parameters
+// Load CLI parameters with improved error handling
 try {
-    const process = remote.process || electron.remote.process || require('process');
-    if (process.argv.includes("--nointro")) {
-        window.settings.nointroOverride = true;
+    const process = remote.process || electron.remote?.process || require('process');
+    if (process && process.argv) {
+        if (process.argv.includes("--nointro")) {
+            window.settings.nointroOverride = true;
+        } else {
+            window.settings.nointroOverride = false;
+        }
+        if (process.argv.includes("--nocursor")) {
+            window.settings.nocursorOverride = true;
+        } else {
+            window.settings.nocursorOverride = false;
+        }
     } else {
         window.settings.nointroOverride = false;
-    }
-    if (process.argv.includes("--nocursor")) {
-        window.settings.nocursorOverride = true;
-    } else {
         window.settings.nocursorOverride = false;
     }
 } catch (e) {
@@ -184,7 +188,25 @@ function waitForFonts() {
 
 // A proxy function used to add multithreading to systeminformation calls - see backend process manager @ _multithread.js
 function initSystemInformationProxy() {
-    const { nanoid } = require("nanoid/non-secure");
+    // Use a simple ID generator fallback for compatibility
+    let idCounter = 0;
+    const generateId = () => {
+        return `id_${Date.now()}_${++idCounter}_${Math.random().toString(36).substr(2, 9)}`;
+    };
+
+    // Try to load nanoid, fallback to simple ID generator
+    let nanoid;
+    try {
+        nanoid = require("nanoid").nanoid;
+    } catch (e) {
+        try {
+            // Try the non-secure version
+            nanoid = require("nanoid/non-secure").nanoid;
+        } catch (e2) {
+            console.warn("Could not load nanoid, using fallback ID generator");
+            nanoid = generateId;
+        }
+    }
 
     window.si = new Proxy({}, {
         apply: () => {throw new Error("Cannot use sysinfo proxy directly as a function")},
@@ -211,9 +233,9 @@ function initSystemInformationProxy() {
 // Init audio
 window.audioManager = new AudioManager();
 
-// See #223
+// See #223 - Fixed app focus
 try {
-    const app = remote.app || electron.remote.app;
+    const app = remote.app || electron.remote?.app;
     if (app && app.focus) {
         app.focus();
     }
@@ -258,7 +280,12 @@ function displayLine() {
 
     switch(true) {
         case i === 2:
-            bootScreen.innerHTML += `eDEX-UI Kernel version ${(remote.app || electron.remote.app || { getVersion: () => "1.0.0" }).getVersion()} boot at ${Date().toString()}; root:xnu-1699.22.73~1/RELEASE_X86_64`;
+            try {
+                const app = remote.app || electron.remote?.app || { getVersion: () => "1.0.0" };
+                bootScreen.innerHTML += `eDEX-UI Kernel version ${app.getVersion()} boot at ${Date().toString()}; root:xnu-1699.22.73~1/RELEASE_X86_64`;
+            } catch (e) {
+                bootScreen.innerHTML += `eDEX-UI Kernel version 1.0.0 boot at ${Date().toString()}; root:xnu-1699.22.73~1/RELEASE_X86_64`;
+            }
         case i === 4:
             setTimeout(displayLine, 500);
             break;
@@ -342,15 +369,30 @@ async function displayTitleScreen() {
     });
 }
 
-// Returns the user's desired display name
+// Returns the user's desired display name - Fixed with better error handling
 async function getDisplayName() {
     let user = settings.username || null;
     if (user)
         return user;
 
     try {
-        user = await require("username")();
-    } catch (e) {}
+        // Try to load username module dynamically
+        const usernameModule = require("username");
+        if (usernameModule) {
+            user = await usernameModule();
+        }
+    } catch (e) {
+        console.log("Could not get username:", e);
+    }
+
+    // Fallback to environment variables
+    if (!user) {
+        try {
+            user = process.env.USER || process.env.USERNAME || process.env.LOGNAME || "User";
+        } catch (e) {
+            user = "User";
+        }
+    }
 
     return user;
 }
@@ -502,7 +544,13 @@ async function initUI() {
     window.onmouseup = e => {
         if (window.keyboard.linkedToTerm) window.term[window.currentTerm].term.focus();
     };
-    window.term[0].term.writeln("\033[1m"+`Welcome to eDEX-UI v${(remote.app || electron.remote.app || { getVersion: () => "1.0.0" }).getVersion()} - Electron v${process.versions.electron}`+"\033[0m");
+    
+    try {
+        const app = remote.app || electron.remote?.app || { getVersion: () => "1.0.0" };
+        window.term[0].term.writeln("\033[1m"+`Welcome to eDEX-UI v${app.getVersion()} - Electron v${process.versions.electron}`+"\033[0m");
+    } catch (e) {
+        window.term[0].term.writeln("\033[1m"+`Welcome to eDEX-UI v1.0.0 - Electron v${process.versions.electron}`+"\033[0m");
+    }
 
     await _delay(100);
 
@@ -605,227 +653,258 @@ window.openSettings = async () => {
     if (document.getElementById("settingsEditor")) return;
 
     // Build lists of available keyboards, themes, monitors
-    let keyboards, themes, monitors, ifaces;
-    fs.readdirSync(keyboardsDir).forEach(kb => {
-        if (!kb.endsWith(".json")) return;
-        kb = kb.replace(".json", "");
-        if (kb === window.settings.keyboard) return;
-        keyboards += `<option>${kb}</option>`;
-    });
-    fs.readdirSync(themesDir).forEach(th => {
-        if (!th.endsWith(".json")) return;
-        th = th.replace(".json", "");
-        if (th === window.settings.theme) return;
-        themes += `<option>${th}</option>`;
-    });
-    for (let i = 0; i < electron.remote.screen.getAllDisplays().length; i++) {
-        if (i !== window.settings.monitor) monitors += `<option>${i}</option>`;
+    let keyboards = "", themes = "", monitors = "", ifaces = "";
+    
+    try {
+        fs.readdirSync(keyboardsDir).forEach(kb => {
+            if (!kb.endsWith(".json")) return;
+            kb = kb.replace(".json", "");
+            if (kb === window.settings.keyboard) return;
+            keyboards += `<option>${kb}</option>`;
+        });
+    } catch (e) {
+        console.warn("Could not read keyboards directory:", e);
     }
-    let nets = await window.si.networkInterfaces();
-    nets.forEach(net => {
-        if (net.iface !== window.mods.netstat.iface) ifaces += `<option>${net.iface}</option>`;
-    });
+    
+    try {
+        fs.readdirSync(themesDir).forEach(th => {
+            if (!th.endsWith(".json")) return;
+            th = th.replace(".json", "");
+            if (th === window.settings.theme) return;
+            themes += `<option>${th}</option>`;
+        });
+    } catch (e) {
+        console.warn("Could not read themes directory:", e);
+    }
+    
+    try {
+        for (let i = 0; i < electron.remote.screen.getAllDisplays().length; i++) {
+            if (i !== window.settings.monitor) monitors += `<option>${i}</option>`;
+        }
+    } catch (e) {
+        console.warn("Could not get display information:", e);
+    }
+    
+    try {
+        let nets = await window.si.networkInterfaces();
+        nets.forEach(net => {
+            if (net.iface !== window.mods.netstat.iface) ifaces += `<option>${net.iface}</option>`;
+        });
+    } catch (e) {
+        console.warn("Could not get network interfaces:", e);
+    }
 
     // Unlink the tactile keyboard from the terminal emulator to allow filling in the settings fields
     window.keyboard.detach();
 
-    new Modal({
-        type: "custom",
-        title: `Settings <i>(v${(remote.app || electron.remote.app || { getVersion: () => "1.0.0" }).getVersion()})</i>`,
-        html: `<table id="settingsEditor">
-                    <tr>
-                        <th>Key</th>
-                        <th>Description</th>
-                        <th>Value</th>
-                    </tr>
-                    <tr>
-                        <td>shell</td>
-                        <td>The program to run as a terminal emulator</td>
-                        <td><input type="text" id="settingsEditor-shell" value="${window.settings.shell}"></td>
-                    </tr>
-                    <tr>
-                        <td>shellArgs</td>
-                        <td>Arguments to pass to the shell</td>
-                        <td><input type="text" id="settingsEditor-shellArgs" value="${window.settings.shellArgs || ''}"></td>
-                    </tr>
-                    <tr>
-                        <td>cwd</td>
-                        <td>Working Directory to start in</td>
-                        <td><input type="text" id="settingsEditor-cwd" value="${window.settings.cwd}"></td>
-                    </tr>
-                    <tr>
-                        <td>env</td>
-                        <td>Custom shell environment override</td>
-                        <td><input type="text" id="settingsEditor-env" value="${window.settings.env}"></td>
-                    </tr>
-                    <tr>
-                        <td>username</td>
-                        <td>Custom username to display at boot</td>
-                        <td><input type="text" id="settingsEditor-username" value="${window.settings.username}"></td>
-                    </tr>
-                    <tr>
-                        <td>keyboard</td>
-                        <td>On-screen keyboard layout code</td>
-                        <td><select id="settingsEditor-keyboard">
-                            <option>${window.settings.keyboard}</option>
-                            ${keyboards}
-                        </select></td>
-                    </tr>
-                    <tr>
-                        <td>theme</td>
-                        <td>Name of the theme to load</td>
-                        <td><select id="settingsEditor-theme">
-                            <option>${window.settings.theme}</option>
-                            ${themes}
-                        </select></td>
-                    </tr>
-                    <tr>
-                        <td>termFontSize</td>
-                        <td>Size of the terminal text in pixels</td>
-                        <td><input type="number" id="settingsEditor-termFontSize" value="${window.settings.termFontSize}"></td>
-                    </tr>
-                    <tr>
-                        <td>audio</td>
-                        <td>Activate audio sound effects</td>
-                        <td><select id="settingsEditor-audio">
-                            <option>${window.settings.audio}</option>
-                            <option>${!window.settings.audio}</option>
-                        </select></td>
-                    </tr>
-                    <tr>
-                        <td>audioVolume</td>
-                        <td>Set default volume for sound effects (0.0 - 1.0)</td>
-                        <td><input type="number" id="settingsEditor-audioVolume" value="${window.settings.audioVolume || '1.0'}"></td>
-                    </tr>
-                    <tr>
-                        <td>disableFeedbackAudio</td>
-                        <td>Disable recurring feedback sound FX (input/output, mostly)</td>
-                        <td><select id="settingsEditor-disableFeedbackAudio">
-                            <option>${window.settings.disableFeedbackAudio}</option>
-                            <option>${!window.settings.disableFeedbackAudio}</option>
-                        </select></td>
-                    </tr>
-                    <tr>
-                        <td>port</td>
-                        <td>Local port to use for UI-shell connection</td>
-                        <td><input type="number" id="settingsEditor-port" value="${window.settings.port}"></td>
-                    </tr>
-                    <tr>
-                        <td>pingAddr</td>
-                        <td>IPv4 address to test Internet connectivity</td>
-                        <td><input type="text" id="settingsEditor-pingAddr" value="${window.settings.pingAddr || "1.1.1.1"}"></td>
-                    </tr>
-                    <tr>
-                        <td>clockHours</td>
-                        <td>Clock format (12/24 hours)</td>
-                        <td><select id="settingsEditor-clockHours">
-                            <option>${(window.settings.clockHours === 12) ? "12" : "24"}</option>
-                            <option>${(window.settings.clockHours === 12) ? "24" : "12"}</option>
-                        </select></td>
-                    <tr>
-                        <td>monitor</td>
-                        <td>Which monitor to spawn the UI in (defaults to primary display)</td>
-                        <td><select id="settingsEditor-monitor">
-                            ${(typeof window.settings.monitor !== "undefined") ? "<option>"+window.settings.monitor+"</option>" : ""}
-                            ${monitors}
-                        </select></td>
-                    </tr>
-                    <tr>
-                        <td>nointro</td>
-                        <td>Skip the intro boot log and logo${(window.settings.nointroOverride) ? " (Currently overridden by CLI flag)" : ""}</td>
-                        <td><select id="settingsEditor-nointro">
-                            <option>${window.settings.nointro}</option>
-                            <option>${!window.settings.nointro}</option>
-                        </select></td>
-                    </tr>
-                    <tr>
-                        <td>nocursor</td>
-                        <td>Hide the mouse cursor${(window.settings.nocursorOverride) ? " (Currently overridden by CLI flag)" : ""}</td>
-                        <td><select id="settingsEditor-nocursor">
-                            <option>${window.settings.nocursor}</option>
-                            <option>${!window.settings.nocursor}</option>
-                        </select></td>
-                    </tr>
-                    <tr>
-                        <td>iface</td>
-                        <td>Override the interface used for network monitoring</td>
-                        <td><select id="settingsEditor-iface">
-                            <option>${window.mods.netstat.iface}</option>
-                            ${ifaces}
-                        </select></td>
-                    </tr>
-                    <tr>
-                        <td>allowWindowed</td>
-                        <td>Allow using F11 key to set the UI in windowed mode</td>
-                        <td><select id="settingsEditor-allowWindowed">
-                            <option>${window.settings.allowWindowed}</option>
-                            <option>${!window.settings.allowWindowed}</option>
-                        </select></td>
-                    </tr>
-                    <tr>
-                        <td>keepGeometry</td>
-                        <td>Try to keep a 16:9 aspect ratio in windowed mode</td>
-                        <td><select id="settingsEditor-keepGeometry">
-                            <option>${(window.settings.keepGeometry === false) ? 'false' : 'true'}</option>
-                            <option>${(window.settings.keepGeometry === false) ? 'true' : 'false'}</option>
-                        </select></td>
-                    </tr>
-                    <tr>
-                        <td>excludeThreadsFromToplist</td>
-                        <td>Display threads in the top processes list</td>
-                        <td><select id="settingsEditor-excludeThreadsFromToplist">
-                            <option>${window.settings.excludeThreadsFromToplist}</option>
-                            <option>${!window.settings.excludeThreadsFromToplist}</option>
-                        </select></td>
-                    </tr>
-                    <tr>
-                        <td>hideDotfiles</td>
-                        <td>Hide files and directories starting with a dot in file display</td>
-                        <td><select id="settingsEditor-hideDotfiles">
-                            <option>${window.settings.hideDotfiles}</option>
-                            <option>${!window.settings.hideDotfiles}</option>
-                        </select></td>
-                    </tr>
-                    <tr>
-                        <td>fsListView</td>
-                        <td>Show files in a more detailed list instead of an icon grid</td>
-                        <td><select id="settingsEditor-fsListView">
-                            <option>${window.settings.fsListView}</option>
-                            <option>${!window.settings.fsListView}</option>
-                        </select></td>
-                    </tr>
-                    <tr>
-                        <td>experimentalGlobeFeatures</td>
-                        <td>Toggle experimental features for the network globe</td>
-                        <td><select id="settingsEditor-experimentalGlobeFeatures">
-                            <option>${window.settings.experimentalGlobeFeatures}</option>
-                            <option>${!window.settings.experimentalGlobeFeatures}</option>
-                        </select></td>
-                    </tr>
-                    <tr>
-                        <td>experimentalFeatures</td>
-                        <td>Toggle Chrome's experimental web features (DANGEROUS)</td>
-                        <td><select id="settingsEditor-experimentalFeatures">
-                            <option>${window.settings.experimentalFeatures}</option>
-                            <option>${!window.settings.experimentalFeatures}</option>
-                        </select></td>
-                    </tr>
-                </table>
-                <h6 id="settingsEditorStatus">Loaded values from memory</h6>
-                <br>`,
-        buttons: [
-            {label: "Open in External Editor", action:`electron.shell.openPath('${settingsFile}');electronWin.minimize();`},
-            {label: "Save to Disk", action: "window.writeSettingsFile()"},
-            {label: "Reload UI", action: "window.location.reload(true);"},
-            {label: "Restart eDEX", action: "electron.remote.app.relaunch();electron.remote.app.quit();"}
-        ]
-    }, () => {
-        // Link the keyboard back to the terminal
-        window.keyboard.attach();
+    try {
+        const app = remote.app || electron.remote?.app || { getVersion: () => "1.0.0" };
+        const version = app.getVersion();
+        
+        new Modal({
+            type: "custom",
+            title: `Settings <i>(v${version})</i>`,
+            html: `<table id="settingsEditor">
+                        <tr>
+                            <th>Key</th>
+                            <th>Description</th>
+                            <th>Value</th>
+                        </tr>
+                        <tr>
+                            <td>shell</td>
+                            <td>The program to run as a terminal emulator</td>
+                            <td><input type="text" id="settingsEditor-shell" value="${window.settings.shell}"></td>
+                        </tr>
+                        <tr>
+                            <td>shellArgs</td>
+                            <td>Arguments to pass to the shell</td>
+                            <td><input type="text" id="settingsEditor-shellArgs" value="${window.settings.shellArgs || ''}"></td>
+                        </tr>
+                        <tr>
+                            <td>cwd</td>
+                            <td>Working Directory to start in</td>
+                            <td><input type="text" id="settingsEditor-cwd" value="${window.settings.cwd}"></td>
+                        </tr>
+                        <tr>
+                            <td>env</td>
+                            <td>Custom shell environment override</td>
+                            <td><input type="text" id="settingsEditor-env" value="${window.settings.env}"></td>
+                        </tr>
+                        <tr>
+                            <td>username</td>
+                            <td>Custom username to display at boot</td>
+                            <td><input type="text" id="settingsEditor-username" value="${window.settings.username || ''}"></td>
+                        </tr>
+                        <tr>
+                            <td>keyboard</td>
+                            <td>On-screen keyboard layout code</td>
+                            <td><select id="settingsEditor-keyboard">
+                                <option>${window.settings.keyboard}</option>
+                                ${keyboards}
+                            </select></td>
+                        </tr>
+                        <tr>
+                            <td>theme</td>
+                            <td>Name of the theme to load</td>
+                            <td><select id="settingsEditor-theme">
+                                <option>${window.settings.theme}</option>
+                                ${themes}
+                            </select></td>
+                        </tr>
+                        <tr>
+                            <td>termFontSize</td>
+                            <td>Size of the terminal text in pixels</td>
+                            <td><input type="number" id="settingsEditor-termFontSize" value="${window.settings.termFontSize}"></td>
+                        </tr>
+                        <tr>
+                            <td>audio</td>
+                            <td>Activate audio sound effects</td>
+                            <td><select id="settingsEditor-audio">
+                                <option>${window.settings.audio}</option>
+                                <option>${!window.settings.audio}</option>
+                            </select></td>
+                        </tr>
+                        <tr>
+                            <td>audioVolume</td>
+                            <td>Set default volume for sound effects (0.0 - 1.0)</td>
+                            <td><input type="number" id="settingsEditor-audioVolume" value="${window.settings.audioVolume || '1.0'}"></td>
+                        </tr>
+                        <tr>
+                            <td>disableFeedbackAudio</td>
+                            <td>Disable recurring feedback sound FX (input/output, mostly)</td>
+                            <td><select id="settingsEditor-disableFeedbackAudio">
+                                <option>${window.settings.disableFeedbackAudio}</option>
+                                <option>${!window.settings.disableFeedbackAudio}</option>
+                            </select></td>
+                        </tr>
+                        <tr>
+                            <td>port</td>
+                            <td>Local port to use for UI-shell connection</td>
+                            <td><input type="number" id="settingsEditor-port" value="${window.settings.port}"></td>
+                        </tr>
+                        <tr>
+                            <td>pingAddr</td>
+                            <td>IPv4 address to test Internet connectivity</td>
+                            <td><input type="text" id="settingsEditor-pingAddr" value="${window.settings.pingAddr || "1.1.1.1"}"></td>
+                        </tr>
+                        <tr>
+                            <td>clockHours</td>
+                            <td>Clock format (12/24 hours)</td>
+                            <td><select id="settingsEditor-clockHours">
+                                <option>${(window.settings.clockHours === 12) ? "12" : "24"}</option>
+                                <option>${(window.settings.clockHours === 12) ? "24" : "12"}</option>
+                            </select></td>
+                        <tr>
+                            <td>monitor</td>
+                            <td>Which monitor to spawn the UI in (defaults to primary display)</td>
+                            <td><select id="settingsEditor-monitor">
+                                ${(typeof window.settings.monitor !== "undefined") ? "<option>"+window.settings.monitor+"</option>" : ""}
+                                ${monitors}
+                            </select></td>
+                        </tr>
+                        <tr>
+                            <td>nointro</td>
+                            <td>Skip the intro boot log and logo${(window.settings.nointroOverride) ? " (Currently overridden by CLI flag)" : ""}</td>
+                            <td><select id="settingsEditor-nointro">
+                                <option>${window.settings.nointro}</option>
+                                <option>${!window.settings.nointro}</option>
+                            </select></td>
+                        </tr>
+                        <tr>
+                            <td>nocursor</td>
+                            <td>Hide the mouse cursor${(window.settings.nocursorOverride) ? " (Currently overridden by CLI flag)" : ""}</td>
+                            <td><select id="settingsEditor-nocursor">
+                                <option>${window.settings.nocursor}</option>
+                                <option>${!window.settings.nocursor}</option>
+                            </select></td>
+                        </tr>
+                        <tr>
+                            <td>iface</td>
+                            <td>Override the interface used for network monitoring</td>
+                            <td><select id="settingsEditor-iface">
+                                <option>${window.mods.netstat ? window.mods.netstat.iface : 'auto'}</option>
+                                ${ifaces}
+                            </select></td>
+                        </tr>
+                        <tr>
+                            <td>allowWindowed</td>
+                            <td>Allow using F11 key to set the UI in windowed mode</td>
+                            <td><select id="settingsEditor-allowWindowed">
+                                <option>${window.settings.allowWindowed}</option>
+                                <option>${!window.settings.allowWindowed}</option>
+                            </select></td>
+                        </tr>
+                        <tr>
+                            <td>keepGeometry</td>
+                            <td>Try to keep a 16:9 aspect ratio in windowed mode</td>
+                            <td><select id="settingsEditor-keepGeometry">
+                                <option>${(window.settings.keepGeometry === false) ? 'false' : 'true'}</option>
+                                <option>${(window.settings.keepGeometry === false) ? 'true' : 'false'}</option>
+                            </select></td>
+                        </tr>
+                        <tr>
+                            <td>excludeThreadsFromToplist</td>
+                            <td>Display threads in the top processes list</td>
+                            <td><select id="settingsEditor-excludeThreadsFromToplist">
+                                <option>${window.settings.excludeThreadsFromToplist}</option>
+                                <option>${!window.settings.excludeThreadsFromToplist}</option>
+                            </select></td>
+                        </tr>
+                        <tr>
+                            <td>hideDotfiles</td>
+                            <td>Hide files and directories starting with a dot in file display</td>
+                            <td><select id="settingsEditor-hideDotfiles">
+                                <option>${window.settings.hideDotfiles}</option>
+                                <option>${!window.settings.hideDotfiles}</option>
+                            </select></td>
+                        </tr>
+                        <tr>
+                            <td>fsListView</td>
+                            <td>Show files in a more detailed list instead of an icon grid</td>
+                            <td><select id="settingsEditor-fsListView">
+                                <option>${window.settings.fsListView}</option>
+                                <option>${!window.settings.fsListView}</option>
+                            </select></td>
+                        </tr>
+                        <tr>
+                            <td>experimentalGlobeFeatures</td>
+                            <td>Toggle experimental features for the network globe</td>
+                            <td><select id="settingsEditor-experimentalGlobeFeatures">
+                                <option>${window.settings.experimentalGlobeFeatures}</option>
+                                <option>${!window.settings.experimentalGlobeFeatures}</option>
+                            </select></td>
+                        </tr>
+                        <tr>
+                            <td>experimentalFeatures</td>
+                            <td>Toggle Chrome's experimental web features (DANGEROUS)</td>
+                            <td><select id="settingsEditor-experimentalFeatures">
+                                <option>${window.settings.experimentalFeatures}</option>
+                                <option>${!window.settings.experimentalFeatures}</option>
+                            </select></td>
+                        </tr>
+                    </table>
+                    <h6 id="settingsEditorStatus">Loaded values from memory</h6>
+                    <br>`,
+            buttons: [
+                {label: "Open in External Editor", action:`electron.shell.openPath('${settingsFile}');electronWin.minimize();`},
+                {label: "Save to Disk", action: "window.writeSettingsFile()"},
+                {label: "Reload UI", action: "window.location.reload(true);"},
+                {label: "Restart eDEX", action: "electron.remote.app.relaunch();electron.remote.app.quit();"}
+            ]
+        }, () => {
+            // Link the keyboard back to the terminal
+            window.keyboard.attach();
 
-        // Focus back on the term
-        window.term[window.currentTerm].term.focus();
-    });
+            // Focus back on the term
+            if (window.term && window.term[window.currentTerm] && window.term[window.currentTerm].term) {
+                window.term[window.currentTerm].term.focus();
+            }
+        });
+    } catch (e) {
+        console.error("Error opening settings:", e);
+        // Fallback simple settings
+        alert("Settings panel could not be opened. Check console for errors.");
+    }
 };
 
 window.writeFile = (path) => {
@@ -835,53 +914,88 @@ window.writeFile = (path) => {
 };
 
 window.writeSettingsFile = () => {
-    window.settings = {
-        shell: document.getElementById("settingsEditor-shell").value,
-        shellArgs: document.getElementById("settingsEditor-shellArgs").value,
-        cwd: document.getElementById("settingsEditor-cwd").value,
-        env: document.getElementById("settingsEditor-env").value,
-        username: document.getElementById("settingsEditor-username").value,
-        keyboard: document.getElementById("settingsEditor-keyboard").value,
-        theme: document.getElementById("settingsEditor-theme").value,
-        termFontSize: Number(document.getElementById("settingsEditor-termFontSize").value),
-        audio: (document.getElementById("settingsEditor-audio").value === "true"),
-        audioVolume: Number(document.getElementById("settingsEditor-audioVolume").value),
-        disableFeedbackAudio: (document.getElementById("settingsEditor-disableFeedbackAudio").value === "true"),
-        pingAddr: document.getElementById("settingsEditor-pingAddr").value,
-        clockHours: Number(document.getElementById("settingsEditor-clockHours").value),
-        port: Number(document.getElementById("settingsEditor-port").value),
-        monitor: Number(document.getElementById("settingsEditor-monitor").value),
-        nointro: (document.getElementById("settingsEditor-nointro").value === "true"),
-        nocursor: (document.getElementById("settingsEditor-nocursor").value === "true"),
-        iface: document.getElementById("settingsEditor-iface").value,
-        allowWindowed: (document.getElementById("settingsEditor-allowWindowed").value === "true"),
-        forceFullscreen: window.settings.forceFullscreen,
-        keepGeometry: (document.getElementById("settingsEditor-keepGeometry").value === "true"),
-        excludeThreadsFromToplist: (document.getElementById("settingsEditor-excludeThreadsFromToplist").value === "true"),
-        hideDotfiles: (document.getElementById("settingsEditor-hideDotfiles").value === "true"),
-        fsListView: (document.getElementById("settingsEditor-fsListView").value === "true"),
-        experimentalGlobeFeatures: (document.getElementById("settingsEditor-experimentalGlobeFeatures").value === "true"),
-        experimentalFeatures: (document.getElementById("settingsEditor-experimentalFeatures").value === "true")
-    };
+    try {
+        window.settings = {
+            shell: document.getElementById("settingsEditor-shell").value,
+            shellArgs: document.getElementById("settingsEditor-shellArgs").value,
+            cwd: document.getElementById("settingsEditor-cwd").value,
+            env: document.getElementById("settingsEditor-env").value,
+            username: document.getElementById("settingsEditor-username").value,
+            keyboard: document.getElementById("settingsEditor-keyboard").value,
+            theme: document.getElementById("settingsEditor-theme").value,
+            termFontSize: Number(document.getElementById("settingsEditor-termFontSize").value),
+            audio: (document.getElementById("settingsEditor-audio").value === "true"),
+            audioVolume: Number(document.getElementById("settingsEditor-audioVolume").value),
+            disableFeedbackAudio: (document.getElementById("settingsEditor-disableFeedbackAudio").value === "true"),
+            pingAddr: document.getElementById("settingsEditor-pingAddr").value,
+            clockHours: Number(document.getElementById("settingsEditor-clockHours").value),
+            port: Number(document.getElementById("settingsEditor-port").value),
+            monitor: Number(document.getElementById("settingsEditor-monitor").value),
+            nointro: (document.getElementById("settingsEditor-nointro").value === "true"),
+            nocursor: (document.getElementById("settingsEditor-nocursor").value === "true"),
+            iface: document.getElementById("settingsEditor-iface").value,
+            allowWindowed: (document.getElementById("settingsEditor-allowWindowed").value === "true"),
+            forceFullscreen: window.settings.forceFullscreen,
+            keepGeometry: (document.getElementById("settingsEditor-keepGeometry").value === "true"),
+            excludeThreadsFromToplist: (document.getElementById("settingsEditor-excludeThreadsFromToplist").value === "true"),
+            hideDotfiles: (document.getElementById("settingsEditor-hideDotfiles").value === "true"),
+            fsListView: (document.getElementById("settingsEditor-fsListView").value === "true"),
+            experimentalGlobeFeatures: (document.getElementById("settingsEditor-experimentalGlobeFeatures").value === "true"),
+            experimentalFeatures: (document.getElementById("settingsEditor-experimentalFeatures").value === "true")
+        };
 
-    Object.keys(window.settings).forEach(key => {
-        if (window.settings[key] === "undefined") {
-            delete window.settings[key];
-        }
-    });
+        Object.keys(window.settings).forEach(key => {
+            if (window.settings[key] === "undefined") {
+                delete window.settings[key];
+            }
+        });
 
-    fs.writeFileSync(settingsFile, JSON.stringify(window.settings, "", 4));
-    document.getElementById("settingsEditorStatus").innerText = "New values written to settings.json file at "+new Date().toTimeString();
+        fs.writeFileSync(settingsFile, JSON.stringify(window.settings, "", 4));
+        document.getElementById("settingsEditorStatus").innerText = "New values written to settings.json file at "+new Date().toTimeString();
+    } catch (e) {
+        console.error("Error writing settings:", e);
+        alert("Error saving settings: " + e.message);
+    }
 };
 
+// Fixed window management
+let electronWin;
+try {
+    electronWin = remote.getCurrentWindow() || electron.remote?.getCurrentWindow();
+} catch (e) {
+    console.warn("Could not get current window:", e);
+    electronWin = {
+        isFullScreen: () => false,
+        setFullScreen: () => {},
+        setSize: () => {},
+        minimize: () => {},
+        isMaximized: () => false,
+        unmaximize: () => {},
+        getSize: () => [1200, 800],
+        on: () => {},
+        webContents: {
+            toggleDevTools: () => {},
+            openDevTools: () => {}
+        }
+    };
+}
+
 window.toggleFullScreen = () => {
-    let useFullscreen = (electronWin.isFullScreen() ? false : true);
-    electronWin.setFullScreen(useFullscreen);
+    if (!electronWin || !electronWin.isFullScreen) {
+        console.warn("Fullscreen not available");
+        return;
+    }
+    
+    try {
+        let useFullscreen = !electronWin.isFullScreen();
+        electronWin.setFullScreen(useFullscreen);
 
-    //Update settings
-    window.lastWindowState["useFullscreen"] = useFullscreen;
-
-    fs.writeFileSync(lastWindowStateFile, JSON.stringify(window.lastWindowState, "", 4));
+        // Update settings
+        window.lastWindowState["useFullscreen"] = useFullscreen;
+        fs.writeFileSync(lastWindowStateFile, JSON.stringify(window.lastWindowState, "", 4));
+    } catch (e) {
+        console.error("Error toggling fullscreen:", e);
+    }
 };
 
 // Display available keyboard shortcuts and custom shortcuts helper
@@ -911,7 +1025,7 @@ window.openShortcutsHelp = () => {
         appList += `<tr>
                         <td>${(cut.enabled) ? 'YES' : 'NO'}</td>
                         <td><input disabled type="text" maxlength=25 value="${cut.trigger}"></td>
-                        <td>${shortcutsDefinition[action]}</td>
+                        <td>${shortcutsDefinition[action] || 'Unknown action'}</td>
                     </tr>`;
     });
 
@@ -929,64 +1043,81 @@ window.openShortcutsHelp = () => {
     });
 
     window.keyboard.detach();
-    new Modal({
-        type: "custom",
-        title: `Available Keyboard Shortcuts <i>(v${(remote.app || electron.remote.app || { getVersion: () => "1.0.0" }).getVersion()})</i>`,
-        html: `<h5>Using either the on-screen or a physical keyboard, you can use the following shortcuts:</h5>
-                <details open id="shortcutsHelpAccordeon1">
-                    <summary>Emulator shortcuts</summary>
-                    <table class="shortcutsHelp">
-                        <tr>
-                            <th>Enabled</th>
-                            <th>Trigger</th>
-                            <th>Action</th>
-                        </tr>
-                        ${appList}
-                    </table>
-                </details>
-                <br>
-                <details id="shortcutsHelpAccordeon2">
-                    <summary>Custom command shortcuts</summary>
-                    <table class="shortcutsHelp">
-                        <tr>
-                            <th>Enabled</th>
-                            <th>Trigger</th>
-                            <th>Command</th>
-                        <tr>
-                       ${customList}
-                    </table>
-                </details>
-                <br>`,
-        buttons: [
-            {label: "Open Shortcuts File", action:`electron.shell.openPath('${shortcutsFile}');electronWin.minimize();`},
-            {label: "Reload UI", action: "window.location.reload(true);"},
-        ]
-    }, () => {
-        window.keyboard.attach();
-        window.term[window.currentTerm].term.focus();
-    });
+    
+    try {
+        const app = remote.app || electron.remote?.app || { getVersion: () => "1.0.0" };
+        
+        new Modal({
+            type: "custom",
+            title: `Available Keyboard Shortcuts <i>(v${app.getVersion()})</i>`,
+            html: `<h5>Using either the on-screen or a physical keyboard, you can use the following shortcuts:</h5>
+                    <details open id="shortcutsHelpAccordeon1">
+                        <summary>Emulator shortcuts</summary>
+                        <table class="shortcutsHelp">
+                            <tr>
+                                <th>Enabled</th>
+                                <th>Trigger</th>
+                                <th>Action</th>
+                            </tr>
+                            ${appList}
+                        </table>
+                    </details>
+                    <br>
+                    <details id="shortcutsHelpAccordeon2">
+                        <summary>Custom command shortcuts</summary>
+                        <table class="shortcutsHelp">
+                            <tr>
+                                <th>Enabled</th>
+                                <th>Trigger</th>
+                                <th>Command</th>
+                            <tr>
+                           ${customList}
+                        </table>
+                    </details>
+                    <br>`,
+            buttons: [
+                {label: "Open Shortcuts File", action:`electron.shell.openPath('${shortcutsFile}');electronWin.minimize();`},
+                {label: "Reload UI", action: "window.location.reload(true);"},
+            ]
+        }, () => {
+            window.keyboard.attach();
+            if (window.term && window.term[window.currentTerm] && window.term[window.currentTerm].term) {
+                window.term[window.currentTerm].term.focus();
+            }
+        });
 
-    let wrap1 = document.getElementById('shortcutsHelpAccordeon1');
-    let wrap2 = document.getElementById('shortcutsHelpAccordeon2');
+        let wrap1 = document.getElementById('shortcutsHelpAccordeon1');
+        let wrap2 = document.getElementById('shortcutsHelpAccordeon2');
 
-    wrap1.addEventListener('toggle', e => {
-        wrap2.open = !wrap1.open;
-    });
+        if (wrap1 && wrap2) {
+            wrap1.addEventListener('toggle', e => {
+                wrap2.open = !wrap1.open;
+            });
 
-    wrap2.addEventListener('toggle', e => {
-        wrap1.open = !wrap2.open;
-    });
+            wrap2.addEventListener('toggle', e => {
+                wrap1.open = !wrap2.open;
+            });
+        }
+    } catch (e) {
+        console.error("Error opening shortcuts help:", e);
+    }
 };
 
+// Fixed useAppShortcut with better error handling
 window.useAppShortcut = action => {
-    switch(action) {
-        case "COPY":
-            window.term[window.currentTerm].clipboard.copy();
-            return true;
-        case "PASTE":
-            window.term[window.currentTerm].clipboard.paste();
-            return true;
-        case "NEXT_TAB":
+    try {
+        switch(action) {
+            case "COPY":
+                if (window.term && window.term[window.currentTerm] && window.term[window.currentTerm].clipboard) {
+                    window.term[window.currentTerm].clipboard.copy();
+                }
+                return true;
+            case "PASTE":
+                if (window.term && window.term[window.currentTerm] && window.term[window.currentTerm].clipboard) {
+                    window.term[window.currentTerm].clipboard.paste();
+                }
+                return true;
+            case "NEXT_TAB":
                 if (window.term[window.currentTerm+1]) {
                     window.focusShellTab(window.currentTerm+1);
                 } else if (window.term[window.currentTerm+2]) {
@@ -998,8 +1129,8 @@ window.useAppShortcut = action => {
                 } else {
                     window.focusShellTab(0);
                 }
-            return true;
-        case "PREVIOUS_TAB":
+                return true;
+            case "PREVIOUS_TAB":
                 let i = window.currentTerm || 4;
                 if (window.term[i] && i !== window.currentTerm) {
                     window.focusShellTab(i);
@@ -1012,56 +1143,72 @@ window.useAppShortcut = action => {
                 } else if (window.term[i-4]) {
                     window.focusShellTab(i-4);
                 }
-            return true;
-        case "TAB_1":
-            window.focusShellTab(0);
-            return true;
-        case "TAB_2":
-            window.focusShellTab(1);
-            return true;
-        case "TAB_3":
-            window.focusShellTab(2);
-            return true;
-        case "TAB_4":
-            window.focusShellTab(3);
-            return true;
-        case "TAB_5":
-            window.focusShellTab(4);
-            return true;
-        case "SETTINGS":
-            window.openSettings();
-            return true;
-        case "SHORTCUTS":
-            window.openShortcutsHelp();
-            return true;
-        case "FUZZY_SEARCH":
-            window.activeFuzzyFinder = new FuzzyFinder();
-            return true;
-        case "FS_LIST_VIEW":
-            window.fsDisp.toggleListview();
-            return true;
-        case "FS_DOTFILES":
-            window.fsDisp.toggleHidedotfiles();
-            return true;
-        case "KB_PASSMODE":
-            window.keyboard.togglePasswordMode();
-            return true;
-        case "DEV_DEBUG":
-            electron.remote.getCurrentWindow().webContents.toggleDevTools();
-            return true;
-        case "DEV_RELOAD":
-            window.location.reload(true);
-            return true;
-        default:
-            console.warn(`Unknown "${action}" app shortcut action`);
-            return false;
+                return true;
+            case "TAB_1":
+                window.focusShellTab(0);
+                return true;
+            case "TAB_2":
+                window.focusShellTab(1);
+                return true;
+            case "TAB_3":
+                window.focusShellTab(2);
+                return true;
+            case "TAB_4":
+                window.focusShellTab(3);
+                return true;
+            case "TAB_5":
+                window.focusShellTab(4);
+                return true;
+            case "SETTINGS":
+                window.openSettings();
+                return true;
+            case "SHORTCUTS":
+                window.openShortcutsHelp();
+                return true;
+            case "FUZZY_SEARCH":
+                if (typeof FuzzyFinder !== 'undefined') {
+                    window.activeFuzzyFinder = new FuzzyFinder();
+                }
+                return true;
+            case "FS_LIST_VIEW":
+                if (window.fsDisp && window.fsDisp.toggleListview) {
+                    window.fsDisp.toggleListview();
+                }
+                return true;
+            case "FS_DOTFILES":
+                if (window.fsDisp && window.fsDisp.toggleHidedotfiles) {
+                    window.fsDisp.toggleHidedotfiles();
+                }
+                return true;
+            case "KB_PASSMODE":
+                if (window.keyboard && window.keyboard.togglePasswordMode) {
+                    window.keyboard.togglePasswordMode();
+                }
+                return true;
+            case "DEV_DEBUG":
+                if (electronWin && electronWin.webContents) {
+                    electronWin.webContents.toggleDevTools();
+                } else {
+                    console.log("DevTools not available");
+                }
+                return true;
+            case "DEV_RELOAD":
+                window.location.reload(true);
+                return true;
+            default:
+                console.warn(`Unknown "${action}" app shortcut action`);
+                return false;
+        }
+    } catch (e) {
+        console.error(`Error executing shortcut ${action}:`, e);
+        return false;
     }
 };
 
-// Global keyboard shortcuts
+// Global keyboard shortcuts with improved error handling
 let globalShortcut;
 try {
-    globalShortcut = remote.globalShortcut || electron.remote.globalShortcut;
+    globalShortcut = remote.globalShortcut || electron.remote?.globalShortcut;
 } catch (e) {
     console.log("GlobalShortcut not available:", e);
     globalShortcut = { 
@@ -1070,43 +1217,70 @@ try {
         unregister: () => {}
     };
 }
-globalShortcut.unregisterAll();
+
+if (globalShortcut && globalShortcut.unregisterAll) {
+    globalShortcut.unregisterAll();
+}
 
 window.registerKeyboardShortcuts = () => {
-    window.shortcuts.forEach(cut => {
-        if (!cut.enabled) return;
+    if (!globalShortcut || !globalShortcut.register) {
+        console.warn("Global shortcuts not available");
+        return;
+    }
+    
+    try {
+        window.shortcuts.forEach(cut => {
+            if (!cut.enabled) return;
 
-        if (cut.type === "app") {
-            if (cut.action === "TAB_X") {
-                for (let i = 1; i <= 5; i++) {
-                    let trigger = cut.trigger.replace("X", i);
-                    let dfn = () => { window.useAppShortcut(`TAB_${i}`) };
-                    globalShortcut.register(trigger, dfn);
+            if (cut.type === "app") {
+                if (cut.action === "TAB_X") {
+                    for (let i = 1; i <= 5; i++) {
+                        let trigger = cut.trigger.replace("X", i);
+                        let dfn = () => { window.useAppShortcut(`TAB_${i}`) };
+                        globalShortcut.register(trigger, dfn);
+                    }
+                } else {
+                    globalShortcut.register(cut.trigger, () => {
+                        window.useAppShortcut(cut.action);
+                    });
                 }
-            } else {
+            } else if (cut.type === "shell") {
                 globalShortcut.register(cut.trigger, () => {
-                    window.useAppShortcut(cut.action);
+                    if (window.term && window.term[window.currentTerm]) {
+                        let fn = (cut.linebreak) ? "writelr" : "write";
+                        if (window.term[window.currentTerm][fn]) {
+                            window.term[window.currentTerm][fn](cut.action);
+                        }
+                    }
                 });
+            } else {
+                console.warn(`${cut.trigger} has unknown type`);
             }
-        } else if (cut.type === "shell") {
-            globalShortcut.register(cut.trigger, () => {
-                let fn = (cut.linebreak) ? "writelr" : "write";
-                window.term[window.currentTerm][fn](cut.action);
-            });
-        } else {
-            console.warn(`${cut.trigger} has unknown type`);
-        }
-    });
+        });
+    } catch (e) {
+        console.error("Error registering shortcuts:", e);
+    }
 };
+
 window.registerKeyboardShortcuts();
 
-// See #361
+// See #361 - Window focus events with error handling
 window.addEventListener("focus", () => {
-    window.registerKeyboardShortcuts();
+    try {
+        window.registerKeyboardShortcuts();
+    } catch (e) {
+        console.error("Error on focus:", e);
+    }
 });
 
 window.addEventListener("blur", () => {
-    globalShortcut.unregisterAll();
+    try {
+        if (globalShortcut && globalShortcut.unregisterAll) {
+            globalShortcut.unregisterAll();
+        }
+    } catch (e) {
+        console.error("Error on blur:", e);
+    }
 });
 
 // Prevent showing menu, exiting fullscreen or app with keyboard shortcuts
@@ -1130,48 +1304,75 @@ document.addEventListener("keydown", e => {
 
 // Fix #265
 window.addEventListener("keyup", e => {
-    if (require("os").platform() === "win32" && e.key === "F4" && e.altKey === true) {
-        electron.remote.app.quit();
+    try {
+        if (require("os").platform() === "win32" && e.key === "F4" && e.altKey === true) {
+            if (electron.remote && electron.remote.app) {
+                electron.remote.app.quit();
+            } else if (remote && remote.app) {
+                remote.app.quit();
+            }
+        }
+    } catch (err) {
+        console.error("Error handling Alt+F4:", err);
     }
 });
 
 // Fix double-tap zoom on touchscreens
-electron.webFrame.setVisualZoomLevelLimits(1, 1);
+try {
+    electron.webFrame.setVisualZoomLevelLimits(1, 1);
+} catch (e) {
+    console.warn("Could not set zoom limits:", e);
+}
 
 // Resize terminal with window
 window.onresize = () => {
-    if (typeof window.currentTerm !== "undefined") {
-        if (typeof window.term[window.currentTerm] !== "undefined") {
-            window.term[window.currentTerm].fit();
+    try {
+        if (typeof window.currentTerm !== "undefined") {
+            if (typeof window.term[window.currentTerm] !== "undefined" && window.term[window.currentTerm].fit) {
+                window.term[window.currentTerm].fit();
+            }
         }
+    } catch (e) {
+        console.error("Error on window resize:", e);
     }
 };
 
-// See #413
+// See #413 - Window geometry management
 window.resizeTimeout = null;
-let electronWin = electron.remote.getCurrentWindow();
-electronWin.on("resize", () => {
-    if (settings.keepGeometry === false) return;
-    clearTimeout(window.resizeTimeout);
-    window.resizeTimeout = setTimeout(() => {
-        let win = electron.remote.getCurrentWindow();
-        if (win.isFullScreen()) return false;
-        if (win.isMaximized()) {
-            win.unmaximize();
-            win.setFullScreen(true);
-            return false;
+
+if (electronWin && electronWin.on) {
+    electronWin.on("resize", () => {
+        if (settings.keepGeometry === false) return;
+        clearTimeout(window.resizeTimeout);
+        window.resizeTimeout = setTimeout(() => {
+            try {
+                let win = electronWin;
+                if (win.isFullScreen && win.isFullScreen()) return false;
+                if (win.isMaximized && win.isMaximized()) {
+                    if (win.unmaximize) win.unmaximize();
+                    if (win.setFullScreen) win.setFullScreen(true);
+                    return false;
+                }
+
+                let size = win.getSize ? win.getSize() : [1200, 800];
+                if (size[0] >= size[1]) {
+                    if (win.setSize) win.setSize(size[0], parseInt(size[0] * 9 / 16));
+                } else {
+                    if (win.setSize) win.setSize(size[1], parseInt(size[1] * 9 / 16));
+                }
+            } catch (e) {
+                console.error("Error in resize handler:", e);
+            }
+        }, 100);
+    });
+
+    electronWin.on("leave-full-screen", () => {
+        try {
+            if (electronWin.setSize) {
+                electronWin.setSize(960, 540);
+            }
+        } catch (e) {
+            console.error("Error setting size on leave fullscreen:", e);
         }
-
-        let size = win.getSize();
-
-        if (size[0] >= size[1]) {
-            win.setSize(size[0], parseInt(size[0] * 9 / 16));
-        } else {
-            win.setSize(size[1], parseInt(size[1] * 9 / 16));
-        }
-    }, 100);
-});
-
-electronWin.on("leave-full-screen", () => {
-    electron.remote.getCurrentWindow().setSize(960, 540);
-});
+    });
+}
