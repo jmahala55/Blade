@@ -54,14 +54,22 @@ window.shortcuts = require(shortcutsFile);
 window.lastWindowState = require(lastWindowStateFile);
 
 // Load CLI parameters
-if (remote.process.argv.includes("--nointro")) {
-    window.settings.nointroOverride = true;
-} else {
+// Load CLI parameters
+try {
+    const process = remote.process || electron.remote.process || require('process');
+    if (process.argv.includes("--nointro")) {
+        window.settings.nointroOverride = true;
+    } else {
+        window.settings.nointroOverride = false;
+    }
+    if (process.argv.includes("--nocursor")) {
+        window.settings.nocursorOverride = true;
+    } else {
+        window.settings.nocursorOverride = false;
+    }
+} catch (e) {
+    console.log("Could not access process.argv, using default settings");
     window.settings.nointroOverride = false;
-}
-if (electron.remote.process.argv.includes("--nocursor")) {
-    window.settings.nocursorOverride = true;
-} else {
     window.settings.nocursorOverride = false;
 }
 
@@ -204,7 +212,14 @@ function initSystemInformationProxy() {
 window.audioManager = new AudioManager();
 
 // See #223
-electron.remote.app.focus();
+try {
+    const app = remote.app || electron.remote.app;
+    if (app && app.focus) {
+        app.focus();
+    }
+} catch (e) {
+    console.log("Could not focus app:", e);
+}
 
 let i = 0;
 if (window.settings.nointro || window.settings.nointroOverride) {
@@ -243,7 +258,7 @@ function displayLine() {
 
     switch(true) {
         case i === 2:
-            bootScreen.innerHTML += `eDEX-UI Kernel version ${electron.remote.app.getVersion()} boot at ${Date().toString()}; root:xnu-1699.22.73~1/RELEASE_X86_64`;
+            bootScreen.innerHTML += `eDEX-UI Kernel version ${(remote.app || electron.remote.app || { getVersion: () => "1.0.0" }).getVersion()} boot at ${Date().toString()}; root:xnu-1699.22.73~1/RELEASE_X86_64`;
         case i === 4:
             setTimeout(displayLine, 500);
             break;
@@ -487,7 +502,7 @@ async function initUI() {
     window.onmouseup = e => {
         if (window.keyboard.linkedToTerm) window.term[window.currentTerm].term.focus();
     };
-    window.term[0].term.writeln("\033[1m"+`Welcome to eDEX-UI v${electron.remote.app.getVersion()} - Electron v${process.versions.electron}`+"\033[0m");
+    window.term[0].term.writeln("\033[1m"+`Welcome to eDEX-UI v${(remote.app || electron.remote.app || { getVersion: () => "1.0.0" }).getVersion()} - Electron v${process.versions.electron}`+"\033[0m");
 
     await _delay(100);
 
@@ -616,7 +631,7 @@ window.openSettings = async () => {
 
     new Modal({
         type: "custom",
-        title: `Settings <i>(v${electron.remote.app.getVersion()})</i>`,
+        title: `Settings <i>(v${(remote.app || electron.remote.app || { getVersion: () => "1.0.0" }).getVersion()})</i>`,
         html: `<table id="settingsEditor">
                     <tr>
                         <th>Key</th>
@@ -916,7 +931,7 @@ window.openShortcutsHelp = () => {
     window.keyboard.detach();
     new Modal({
         type: "custom",
-        title: `Available Keyboard Shortcuts <i>(v${electron.remote.app.getVersion()})</i>`,
+        title: `Available Keyboard Shortcuts <i>(v${(remote.app || electron.remote.app || { getVersion: () => "1.0.0" }).getVersion()})</i>`,
         html: `<h5>Using either the on-screen or a physical keyboard, you can use the following shortcuts:</h5>
                 <details open id="shortcutsHelpAccordeon1">
                     <summary>Emulator shortcuts</summary>
@@ -1044,7 +1059,17 @@ window.useAppShortcut = action => {
 };
 
 // Global keyboard shortcuts
-const globalShortcut = electron.remote.globalShortcut;
+let globalShortcut;
+try {
+    globalShortcut = remote.globalShortcut || electron.remote.globalShortcut;
+} catch (e) {
+    console.log("GlobalShortcut not available:", e);
+    globalShortcut = { 
+        register: () => {}, 
+        unregisterAll: () => {},
+        unregister: () => {}
+    };
+}
 globalShortcut.unregisterAll();
 
 window.registerKeyboardShortcuts = () => {

@@ -30,7 +30,8 @@ if (!gotLock) {
 signale.time("Startup");
 
 const electron = require("electron");
-require('@electron/remote/main').initialize()
+// Initialize @electron/remote
+require('@electron/remote/main').initialize();
 const ipc = electron.ipcMain;
 const path = require("path");
 const url = require("url");
@@ -70,6 +71,7 @@ try {
 } catch(e) {
     signale.info(`Base config dir is ${electron.app.getPath("userData")}`);
 }
+
 // Create default settings file
 if (!fs.existsSync(settingsFile)) {
     fs.writeFileSync(settingsFile, JSON.stringify({
@@ -77,7 +79,7 @@ if (!fs.existsSync(settingsFile)) {
         shellArgs: '',
         cwd: electron.app.getPath("userData"),
         keyboard: "en-US",
-        theme: "tron",
+        theme: "blade",  // Changed to blade theme since you're copying it
         termFontSize: 15,
         audio: true,
         audioVolume: 1.0,
@@ -85,10 +87,10 @@ if (!fs.existsSync(settingsFile)) {
         clockHours: 24,
         pingAddr: "1.1.1.1",
         port: 3000,
-        nointro: false,
+        nointro: false,  // Set to true if you want to skip boot animation
         nocursor: false,
-        forceFullscreen: true,
-        allowWindowed: false,
+        forceFullscreen: false,  // Changed to false for easier debugging
+        allowWindowed: true,     // Changed to true for easier debugging
         excludeThreadsFromToplist: true,
         hideDotfiles: false,
         fsListView: false,
@@ -97,6 +99,7 @@ if (!fs.existsSync(settingsFile)) {
     }, "", 4));
     signale.info(`Default settings written to ${settingsFile}`);
 }
+
 // Create default shortcuts file
 if (!fs.existsSync(shortcutsFile)) {
     fs.writeFileSync(shortcutsFile, JSON.stringify([
@@ -111,16 +114,17 @@ if (!fs.existsSync(shortcutsFile)) {
         { type: "app", trigger: "Ctrl+Shift+L", action: "FS_LIST_VIEW", enabled: true },
         { type: "app", trigger: "Ctrl+Shift+H", action: "FS_DOTFILES", enabled: true },
         { type: "app", trigger: "Ctrl+Shift+P", action: "KB_PASSMODE", enabled: true },
-        { type: "app", trigger: "Ctrl+Shift+I", action: "DEV_DEBUG", enabled: false },
+        { type: "app", trigger: "Ctrl+Shift+I", action: "DEV_DEBUG", enabled: true },  // Enabled for debugging
         { type: "app", trigger: "Ctrl+Shift+F5", action: "DEV_RELOAD", enabled: true },
         { type: "shell", trigger: "Ctrl+Shift+Alt+Space", action: "neofetch", linebreak: true, enabled: false }
     ], "", 4));
     signale.info(`Default keymap written to ${shortcutsFile}`);
 }
-//Create default window state file
+
+// Create default window state file
 if(!fs.existsSync(lastWindowStateFile)) {
     fs.writeFileSync(lastWindowStateFile, JSON.stringify({
-        useFullscreen: true
+        useFullscreen: false  // Changed to false for easier debugging
     }, "", 4));
     signale.info(`Default last window state written to ${lastWindowStateFile}`);
 }
@@ -132,25 +136,31 @@ try {
 } catch(e) {
     // Folder already exists
 }
-fs.readdirSync(innerThemesDir).forEach(e => {
-    fs.writeFileSync(path.join(themesDir, e), fs.readFileSync(path.join(innerThemesDir, e), {encoding:"utf-8"}));
-});
+if (fs.existsSync(innerThemesDir)) {
+    fs.readdirSync(innerThemesDir).forEach(e => {
+        fs.writeFileSync(path.join(themesDir, e), fs.readFileSync(path.join(innerThemesDir, e), {encoding:"utf-8"}));
+    });
+}
 try {
     fs.mkdirSync(kblayoutsDir);
 } catch(e) {
     // Folder already exists
 }
-fs.readdirSync(innerKblayoutsDir).forEach(e => {
-    fs.writeFileSync(path.join(kblayoutsDir, e), fs.readFileSync(path.join(innerKblayoutsDir, e), {encoding:"utf-8"}));
-});
+if (fs.existsSync(innerKblayoutsDir)) {
+    fs.readdirSync(innerKblayoutsDir).forEach(e => {
+        fs.writeFileSync(path.join(kblayoutsDir, e), fs.readFileSync(path.join(innerKblayoutsDir, e), {encoding:"utf-8"}));
+    });
+}
 try {
     fs.mkdirSync(fontsDir);
 } catch(e) {
     // Folder already exists
 }
-fs.readdirSync(innerFontsDir).forEach(e => {
-    fs.writeFileSync(path.join(fontsDir, e), fs.readFileSync(path.join(innerFontsDir, e)));
-});
+if (fs.existsSync(innerFontsDir)) {
+    fs.readdirSync(innerFontsDir).forEach(e => {
+        fs.writeFileSync(path.join(fontsDir, e), fs.readFileSync(path.join(innerFontsDir, e)));
+    });
+}
 
 // Version history logging
 const versionHistoryPath = path.join(electron.app.getPath("userData"), "versions_log.json");
@@ -176,7 +186,17 @@ function createWindow(settings) {
         display = electron.screen.getPrimaryDisplay();
     }
     let {x, y, width, height} = display.bounds;
-    width++; height++;
+    
+    // For debugging, use smaller window size if not fullscreen
+    if (!settings.forceFullscreen) {
+        width = 1200;
+        height = 800;
+        x = 100;
+        y = 100;
+    } else {
+        width++; height++;
+    }
+    
     win = new BrowserWindow({
         title: "eDEX-UI",
         x,
@@ -192,7 +212,7 @@ function createWindow(settings) {
         backgroundColor: '#000000',
         webPreferences: {
             devTools: true,
-	    enableRemoteModule: true,
+            enableRemoteModule: true,
             contextIsolation: false,
             backgroundThrottling: false,
             webSecurity: true,
@@ -203,6 +223,9 @@ function createWindow(settings) {
         }
     });
 
+    // Enable @electron/remote for this window
+    require('@electron/remote/main').enable(win.webContents);
+
     win.loadURL(url.format({
         pathname: path.join(__dirname, 'ui.html'),
         protocol: 'file:',
@@ -211,6 +234,10 @@ function createWindow(settings) {
 
     signale.complete("Frontend window created!");
     win.show();
+    
+    // Open DevTools for debugging
+    win.webContents.openDevTools();
+    
     if (!settings.allowWindowed) {
         win.setResizable(false);
     } else if (!require(lastWindowStateFile)["useFullscreen"]) {
@@ -365,7 +392,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
-    tty.close();
+    if (tty) tty.close();
     Object.keys(extraTtys).forEach(key => {
         if (extraTtys[key] !== null) {
             extraTtys[key].close();
