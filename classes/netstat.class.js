@@ -1,3 +1,6 @@
+const { pathToFileURL } = require("url");
+
+
 class Netstat {
     constructor(container) {
         this.container = container;
@@ -17,25 +20,31 @@ class Netstat {
         }, 1000);
     }
     
-    initGeoReader() {
+    async initGeoReader() {
         try {
-            // Try to load geolite2-redist
-            const geolite2 = require('geolite2-redist');
-            const maxmind = require('maxmind');
-            
-            // Initialize the reader
-            geolite2.downloadDbs().then(() => {
-                this.geoReader = maxmind.openSync(geolite2.paths.city);
-                console.log("GeoIP database loaded successfully");
-            }).catch(e => {
-                console.warn("Could not download GeoIP database:", e);
-                this.geoReader = null;
-            });
+          // Import geolite2-redist (ESM) via Node resolution -> file:// URL
+          const geoliteHref = pathToFileURL(require.resolve("geolite2-redist")).href;
+          const geoliteMod = await import(geoliteHref);
+          const geolite2 = geoliteMod.default || geoliteMod; // supports default/named export
+      
+          // Load maxmind (try CJS require first; fall back to ESM import if needed)
+          let maxmind;
+          try {
+            maxmind = require("maxmind");
+          } catch {
+            const mmHref = pathToFileURL(require.resolve("maxmind")).href;
+            const mmMod = await import(mmHref);
+            maxmind = mmMod.default || mmMod;
+          }
+      
+          // Open the city database
+          this.geoReader = await maxmind.open(geolite2.paths.city);
         } catch (e) {
-            console.warn("GeoIP functionality not available:", e.message);
-            this.geoReader = null;
+          console.warn("GeoIP functionality not available:", e);
+          this.geoReader = null;
         }
-    }
+      }
+      
     
     getLocationFromIP(ip) {
         if (!this.geoReader) {

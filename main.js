@@ -218,15 +218,16 @@ function createWindow(settings) {
         webPreferences: {
             devTools: true,
             enableRemoteModule: true,
-            contextIsolation: false,
+            contextIsolation: false,   // 👈 keep this false
             backgroundThrottling: false,
             webSecurity: true,
-            nodeIntegration: true,
+            nodeIntegration: true,     // 👈 add this
             nodeIntegrationInSubFrames: false,
             allowRunningInsecureContent: false,
             experimentalFeatures: settings.experimentalFeatures || false
         }
     });
+    
 
     // Enable @electron/remote for this window
     require('@electron/remote/main').enable(win.webContents);

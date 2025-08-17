@@ -370,31 +370,24 @@ async function displayTitleScreen() {
 }
 
 // Returns the user's desired display name - Fixed with better error handling
+const os = require("os");
+
 async function getDisplayName() {
-    let user = settings.username || null;
-    if (user)
-        return user;
+    // 1) explicit override wins
+    if (settings.username && settings.username.trim()) return settings.username;
 
+    // 2) OS user
     try {
-        // Try to load username module dynamically
-        const usernameModule = require("username");
-        if (usernameModule) {
-            user = await usernameModule();
-        }
-    } catch (e) {
-        console.log("Could not get username:", e);
-    }
+        const info = os.userInfo();
+        if (info && info.username) return info.username;
+    } catch {}
 
-    // Fallback to environment variables
-    if (!user) {
-        try {
-            user = process.env.USER || process.env.USERNAME || process.env.LOGNAME || "User";
-        } catch (e) {
-            user = "User";
-        }
-    }
+    // 3) env fallback
+    try {
+        return process.env.USER || process.env.USERNAME || process.env.LOGNAME || "User";
+    } catch {}
 
-    return user;
+    return "User";
 }
 
 // Create the UI's html structure and initialize the terminal client and the keyboard

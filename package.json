@@ -15,17 +15,18 @@
   "dependencies": {
     "@electron/remote": "^2.1.3",
     "augmented-ui": "^2.0.0",
+    "geolite2-redist": "^3.1.1",
     "howler": "^2.2.3",
+    "maxmind": "^4.3.6",
     "nanoid": "^3.3.7",
     "node-pty": "^1.0.0",
     "pdfjs-dist": "^5.4.54",
+    "pretty-bytes": "^7.0.1",
     "shell-env": "^3.0.1",
     "signale": "^1.4.0",
-    "systeminformation": "^5.27.7",
-    "which": "^5.0.0",
     "smoothie": "^1.35.0",
+    "systeminformation": "^5.27.7",
     "username": "^5.1.0",
-    "geolite2-redist": "^3.0.0",
-    "maxmind": "^4.3.6"
+    "which": "^5.0.0"
   }
 }

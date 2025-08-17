@@ -2,7 +2,7 @@
 <html>
     <head>
         <meta charset="utf-8" />
-        <meta http-equiv="Content-Security-Policy" content="default-src file: 'unsafe-inline'; img-src file: data:; media-src file:; connect-src ws: file:">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' file:;">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>eDEX-UI</title>
 
@@ -56,11 +56,15 @@
         <script src="classes/fuzzyFinder.class.js"></script>
         <!-- Load extra classes -->
         <script src="classes/audiofx.class.js"></script>
+
+        <!-- Load vendor scripts -->
+        <script src="assets/vendor/encom-globe.js"></script>
     </head>
     <body class="solidBackground">
         <section id="boot_screen">
         </section>
 
+        <!-- App entrypoint -->
         <script src="renderer.js"></script>
     </body>
 </html>
